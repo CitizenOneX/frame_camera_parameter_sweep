@@ -42,13 +42,14 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
   @override
   Future<void> run() async {
-    currentState = ApplicationState.running;
-    if (mounted) setState(() {});
+    setState(() {
+      currentState = ApplicationState.running;
+    });
 
     try {
-      // loop over shutter range
-      const qualityIndex = 0;
+      const qualityIndex = 1;
       const isAutoExposure = false;
+      // number of cells on each side of the square grid
       const size = 5;
 
       // loop over analog gain in SIZE rows
@@ -62,79 +63,80 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
           double logShutterVal = minLog + col * (maxLog-minLog) / (size - 1);
           int shutterVal = exp(logShutterVal).clamp(4, 16343).toInt();
 
+          _log.info('Requesting Photo: shutter=$shutterVal, gain=$gainVal');
+
           try {
-            // set up the data response handler for the photos
-            _photoStream = RxPhoto(qualityLevel: _qualityValues[qualityIndex].toInt()).attach(frame!.dataResponse).listen((imageData) {
-              // received a whole-image Uint8List with jpeg header and footer included
-              _stopwatch.stop();
+            // send the lua command to request a photo from the Frame
+            _stopwatch.reset();
+            _stopwatch.start();
 
-              // unsubscribe from the image stream now (to also release the underlying data stream subscription)
-              _photoStream?.cancel();
+            // Send the respective settings for an auto or a manual photo
+            // ignore: dead_code
+            if (isAutoExposure) {
+              await frame!.sendMessage(TxCameraSettings(
+                msgCode: 0x0d,
+                qualityIndex: qualityIndex,
+                autoExpGainTimes: 5, // val >= 0; number of times auto exposure and gain algorithm will be run every _autoExpInterval ms
+                autoExpInterval: 100,  // 0<= val <= 255; sleep time between runs of the autoexposure algorithm
+                meteringIndex: 2,  // ['SPOT', 'CENTER_WEIGHTED', 'AVERAGE'];
+                exposure: 0.18, // 0.0 <= val <= 1.0
+                exposureSpeed: 0.5, // 0.0 <= val <= 1.0
+                shutterLimit: 16383,  // 4 < val < 16383
+                analogGainLimit: 248,  // 0 <= val <= 248
+                whiteBalanceSpeed: 0.5,  // 0.0 <= val <= 1.0
+              ));
+            }
+            else {
+              await frame!.sendMessage(TxCameraSettings(
+                msgCode: 0x0d,
+                qualityIndex: qualityIndex,
+                autoExpGainTimes: 0,
+                manualShutter: shutterVal,  // 4 < val < 16383
+                manualAnalogGain: gainVal,  // 0 <= val <= 248
+                manualRedGain: 128,  // 0 <= val <= 1023
+                manualGreenGain: 128,  // 0 <= val <= 1023
+                manualBlueGain: 128,  // 0 <= val <= 1023
+              ));
+            }
 
-              try {
-                Image im = Image.memory(imageData);
+            // wait and receive the photo synchronously
+            Uint8List imageData = await RxPhoto(qualityLevel: _qualityValues[qualityIndex].toInt()).attach(frame!.dataResponse).single;
+            // received a whole-image Uint8List with jpeg header and footer included
+            _stopwatch.stop();
 
-                _log.fine('Image file size in bytes: ${imageData.length}, elapsedMs: ${_stopwatch.elapsedMilliseconds}');
+            // unsubscribe from the image stream now (to also release the underlying data stream subscription)
+            _photoStream?.cancel();
 
-                setState(() {
-                  _imageList.insert(0, im);
-                  _jpegBytes.insert(0, imageData);
-                });
+            try {
+              Image im = Image.memory(imageData);
 
-                currentState = ApplicationState.ready;
-                if (mounted) setState(() {});
+              _log.fine('Image file size in bytes: ${imageData.length}, elapsedMs: ${_stopwatch.elapsedMilliseconds}');
 
-              } catch (e) {
-                _log.severe('Error converting bytes to image: $e');
-              }
-            });
+              setState(() {
+                _imageList.insert(0, im);
+                _jpegBytes.insert(0, imageData);
+              });
+            } catch (e) {
+              _log.severe('Error converting bytes to image: $e');
+            }
           } catch (e) {
             _log.severe('Error reading image data response: $e');
             // unsubscribe from the image stream now (to also release the underlying data stream subscription)
             _photoStream?.cancel();
           }
-
-          // send the lua command to request a photo from the Frame
-          _stopwatch.reset();
-          _stopwatch.start();
-
-          // Send the respective settings for autoexposure or manual
-          // ignore: dead_code
-          if (isAutoExposure) {
-            await frame!.sendMessage(TxCameraSettings(
-              msgCode: 0x0d,
-              qualityIndex: qualityIndex,
-              autoExpGainTimes: 5, // val >= 0; number of times auto exposure and gain algorithm will be run every _autoExpInterval ms
-              autoExpInterval: 100,  // 0<= val <= 255; sleep time between runs of the autoexposure algorithm
-              meteringIndex: 2,  // ['SPOT', 'CENTER_WEIGHTED', 'AVERAGE'];
-              exposure: 0.18, // 0.0 <= val <= 1.0
-              exposureSpeed: 0.5, // 0.0 <= val <= 1.0
-              shutterLimit: 16383,  // 4 < val < 16383
-              analogGainLimit: 248,  // 0 <= val <= 248
-              whiteBalanceSpeed: 0.5,  // 0.0 <= val <= 1.0
-            ));
-          }
-          else {
-            await frame!.sendMessage(TxCameraSettings(
-              msgCode: 0x0d,
-              qualityIndex: qualityIndex,
-              autoExpGainTimes: 0,
-              manualShutter: shutterVal,  // 4 < val < 16383
-              manualAnalogGain: gainVal,  // 0 <= val <= 248
-              manualRedGain: 128,  // 0 <= val <= 1023
-              manualGreenGain: 128,  // 0 <= val <= 1023
-              manualBlueGain: 128,  // 0 <= val <= 1023
-            ));
-          }
-
-          // TODO can I string the next call for a photo after the previous one is received?
-          await Future.delayed(const Duration(seconds: 3));
         } // inner for loop - single row
       } // for loop
     }
     catch (e) {
       _log.severe('Error executing application: $e');
+      setState(() {
+        currentState = ApplicationState.ready;
+      });
     }
+
+    setState(() {
+      currentState = ApplicationState.ready;
+    });
   }
 
   /// cancel the current photo

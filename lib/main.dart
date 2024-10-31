@@ -28,6 +28,8 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   // the list of images to show in the scolling list view
   final List<Image> _imageList = [];
   final List<Uint8List> _jpegBytes = [];
+  // the size x size list of individual images that will be composited to the larger image
+  final List<img.Image> _cellImageList = [];
   final Stopwatch _stopwatch = Stopwatch();
 
   // camera settings
@@ -50,7 +52,8 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
       const qualityIndex = 1;
       const isAutoExposure = false;
       // number of cells on each side of the square grid
-      const size = 5;
+      const size = 8;
+      _cellImageList.clear();
 
       // loop over analog gain in SIZE rows
       for (var row = 0; row < size; row++) {
@@ -108,16 +111,19 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
             _photoStream?.cancel();
 
             try {
-              Image im = Image.memory(imageData);
+              img.Image im = img.decodeImage(imageData)!;
+              // rotate the image 90 degrees counterclockwise since the Frame camera is rotated 90 clockwise
+              img.Image rotatedImage = img.copyRotate(im, angle: 270);
 
               _log.fine('Image file size in bytes: ${imageData.length}, elapsedMs: ${_stopwatch.elapsedMilliseconds}');
 
               setState(() {
-                _imageList.insert(0, im);
-                _jpegBytes.insert(0, imageData);
+                _cellImageList.add(rotatedImage);
               });
             } catch (e) {
               _log.severe('Error converting bytes to image: $e');
+              // add a dummy image if there was an issue
+              _cellImageList.add(img.Image(width: 512, height: 512));
             }
           } catch (e) {
             _log.severe('Error reading image data response: $e');
@@ -126,6 +132,15 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
           }
         } // inner for loop - single row
       } // for loop
+
+      // now make a composite image
+      Uint8List compositeJpgBytes = img.encodeJpg(combineImagesIntoGrid(_cellImageList, size, _cellImageList[0].width));
+      _imageList.insert(0, Image.memory(compositeJpgBytes));
+      _jpegBytes.insert(0, compositeJpgBytes);
+
+      setState(() {
+        currentState = ApplicationState.ready;
+      });
     }
     catch (e) {
       _log.severe('Error executing application: $e');
@@ -133,10 +148,6 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
         currentState = ApplicationState.ready;
       });
     }
-
-    setState(() {
-      currentState = ApplicationState.ready;
-    });
   }
 
   /// cancel the current photo
@@ -144,6 +155,31 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   Future<void> cancel() async {
     currentState = ApplicationState.ready;
     if (mounted) setState(() {});
+  }
+
+  img.Image combineImagesIntoGrid(List<img.Image> images, int gridSize, int cellSize) {
+    if (images.length != gridSize * gridSize) {
+      throw ArgumentError('The list of images must be of length $gridSize * $gridSize');
+    }
+
+    // Set the width and height of each single image
+    final int imageWidth = cellSize;
+    final int imageHeight = cellSize;
+
+    // Create a new image to hold the NxN grid
+    final int gridWidth = gridSize * imageWidth;
+    final int gridHeight = gridSize * imageHeight;
+    final img.Image gridImage = img.Image(width: gridWidth, height: gridHeight);
+
+    // Draw each image onto the grid image at the correct position
+    for (int i = 0; i < gridSize; i++) {
+      for (int j = 0; j < gridSize; j++) {
+        final img.Image image = images[i * gridSize + j];
+        img.compositeImage(gridImage, image, dstX: j * imageWidth, dstY: i * imageHeight);
+      }
+    }
+
+    return gridImage;
   }
 
   @override
@@ -167,13 +203,9 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     child: Column(
                       children: [
-                        Transform(
-                          alignment: Alignment.center,
-                          transform: Matrix4.rotationZ(-pi*0.5),
-                          child: GestureDetector(
-                            onTap: () => _shareImage(_imageList[index], _jpegBytes[index]),
-                            child: _imageList[index]
-                          )
+                        GestureDetector(
+                          onTap: () => _shareImage(_imageList[index], _jpegBytes[index]),
+                          child: _imageList[index]
                         ),
                       ],
                     )
@@ -194,12 +226,8 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   void _shareImage(Image image, Uint8List jpegBytes) async {
     try {
     // Share the image bytes as a JPEG file
-    img.Image im = img.decodeImage(jpegBytes)!;
-    // rotate the image 90 degrees counterclockwise since the Frame camera is rotated 90 clockwise
-    img.Image rotatedImage = img.copyRotate(im, angle: 270);
-
     await Share.shareXFiles(
-      [XFile.fromData(Uint8List.fromList(img.encodeJpg(rotatedImage)), mimeType: 'image/jpeg', name: 'image.jpg')],
+      [XFile.fromData(jpegBytes, mimeType: 'image/jpeg', name: 'image.jpg')],
       text: 'Frame camera image',
     );
     }

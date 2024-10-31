@@ -1,5 +1,5 @@
-name: frame_flutter_camera
-description: "Finds Frame in connected System Bluetooth Devices, initiates a photo capture and returns the image with metadata to the host app for display in a list."
+name: frame_camera_parameter_sweep
+description: "Frame app for sweeping over a variety of exposure and gain parameters"
 publish_to: 'none'
 version: 0.1.0
 
